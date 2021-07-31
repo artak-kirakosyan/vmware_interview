@@ -50,3 +50,6 @@ Final sorted matrix:
 0111
 0011
 ```
+
+Please install all required libraries before running by:
+```pip install -r requirements.txt```

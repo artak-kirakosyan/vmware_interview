@@ -4,11 +4,11 @@ import logging
 import os
 import re
 import socket
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pprint import pprint
-from typing import List, Dict, Iterable
+from typing import List, Dict, Iterable, Optional
 
+import typer
 import paramiko
 
 
@@ -212,15 +212,13 @@ def check_all_hosts_status(file_path, pool_size=10) -> List[Dict]:
     return list(results)
 
 
-def main():
-    try:
-        file_path = sys.argv[1]
-    except IndexError:
-        print("Pass file name or path as an argument")
-        sys.exit(1)
-    results = check_all_hosts_status(file_path=file_path)
+def main(
+        file_path: str = typer.Argument(...),
+        number_of_parallel_workers: Optional[int] = typer.Argument(3)
+):
+    results = check_all_hosts_status(file_path=file_path, pool_size=number_of_parallel_workers)
     pprint(results)
 
 
 if __name__ == "__main__":
-    main()
+    typer.run(main)
