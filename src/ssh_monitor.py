@@ -1,9 +1,12 @@
+import copy
+import ipaddress as ip
 import os
 import re
 import socket
-from pprint import pprint
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict
-import copy
+import logging
 import paramiko
 
 
@@ -15,10 +18,10 @@ def get_hosts(file_path: str):
             yield line
 
 
-def get_active_hosts(file_path: str, comment_symbol: str = "#"):
+def get_active_hosts(file_path: str, comment_symbol: str = ";"):
     for line in get_hosts(file_path):
         if line.startswith(comment_symbol):
-            print("Commented line:\n\t'%s'" % line)
+            logging.warning("Commented line:\n\t'%s'" % line)
             continue
         else:
             yield line
@@ -34,14 +37,27 @@ class Command:
 
 
 class HostCredentials:
+    """
+    Basic class to represent single host's credentials
+    """
+    __ip_address_pattern = r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+    __username_pattern = r"(\w+)"
+    __password_pattern = r"(\w+)"
+    __ip_separator = ", "
+    __username_separator = "/"
+    __pattern = "%s%s%s%s%s" % (
+        __ip_address_pattern, __ip_separator, __username_pattern, __username_separator, __password_pattern
+    )
+    __compiled_pattern = re.compile(__pattern)
+
     def __init__(
             self,
-            hostname: str,
+            ip_address: str,
             username: str,
             password: str = None,
             private_key_file: str = None,
     ):
-        self.hostname = hostname
+        self.ip_address = ip_address
         self.username = username
         self.password = password
         self.private_key_file = private_key_file
@@ -52,30 +68,38 @@ class HostCredentials:
             self.private_key = None
 
     def __repr__(self):
-        return "HostCredentials(%s, %s, %s, %s)" % (self.hostname, self.username, self.password, self.private_key_file)
+        return "HostCredentials('%s', '%s', '%s', %s)" % (
+            self.ip_address, self.username, self.password, self.private_key_file
+        )
 
     @classmethod
     def get_host_credentials_from_line(
             cls,
             line: str,
-            hostname_separator: str = ", ",
-            username_password_separator: str = "/",
     ) -> "HostCredentials":
-        pattern = re.compile(
-            r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})%s(\w+)%s(\w+)" % (hostname_separator, username_password_separator)
-        )
-        match = re.match(pattern, line)
+        """
+        Try to match a ip_address, username and password from the given line.
+        Return HostnameCredentials object if succeed, otherwise raise ValueError
+        :param line: a single line from the given configuration file
+        :return:
+        """
+        match = re.match(cls.__compiled_pattern, line)
         if match is None:
             raise ValueError("Failed to match host credentials")
 
         groups = match.groups()
         try:
-            hostname, username, password = groups
+            ip_address, username, password = groups
         except ValueError as e:
             raise ValueError("Some of the credentials didn't match: %s " % e)
-
+        try:
+            ip.ip_address(ip_address)
+        except Exception as e:
+            msg = "Invalid ip address '%s': error: '%s'" % (ip_address, e)
+            logging.warning(msg)
+            raise ValueError(msg)
         return cls(
-            hostname=hostname, username=username, password=password
+            ip_address=ip_address, username=username, password=password
         )
 
 
@@ -100,22 +124,24 @@ class SSHExecutor:
         self.commands = commands_list
 
         self.client = paramiko.SSHClient()
+        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         self.client.load_system_host_keys()
         self.timeout = timeout
         self.host = host
 
     def connect(self):
+        logging.debug("Connecting to %s" % self.host)
         try:
             self.client.connect(
-                hostname=self.host.hostname,
+                hostname=self.host.ip_address,
                 username=self.host.username,
                 password=self.host.password,
                 pkey=self.host.private_key,
                 timeout=self.timeout,
             )
         except paramiko.ssh_exception.AuthenticationException as e:
-            msg = "Failed to connect to %s: %s" % (self.host.hostname, e)
-            print(msg)
+            msg = "Failed to connect to %s: %s" % (self.host.ip_address, e)
+            logging.error(msg)
             raise e
 
     def execute_commands(self) -> Dict[str, Dict[str, str]]:
@@ -128,7 +154,7 @@ class SSHExecutor:
         try:
             _, std_out, std_err = self.client.exec_command(command=command.command)
         except paramiko.SSHException as e:
-            print("Failed on %s" % command)
+            logging.error("Failed on %s" % command)
             output = None
             error = "Failed to execute %s: %s" % (command, e)
         else:
@@ -142,29 +168,44 @@ class SSHExecutor:
     def get_commands_results(self) -> Dict[str, Dict[str, str]]:
         try:
             self.connect()
-            results = self.execute_commands()
         except paramiko.AuthenticationException as e:
-            print("Authentication error on connection: %s" % e)
+            logging.error("Authentication error when connecting to %s: %s" % (self.host, e))
             results = {}
         except socket.timeout as e:
-            print("Connection timed out: %s" % e)
+            logging.error("Connection timed out on %s: %s" % (self.host, e))
             results = {}
+        else:
+            logging.debug("Connected to %s, executing commands" % (self.host,))
+            results = self.execute_commands()
         finally:
             self.client.close()
         return results
 
 
-def main():
-    for line in get_active_hosts(file_path="hosts.txt"):
-        try:
-            host = HostCredentials.get_host_credentials_from_line(line)
-        except ValueError:
-            print("Failed to get host info from %s" % line)
-            continue
+def connect_and_get_results(line: str):
+    try:
+        host = HostCredentials.get_host_credentials_from_line(line)
+    except ValueError:
+        logging.error("Failed to get host info from %s" % line)
+        raise RuntimeError("Failed to get host info")
 
-        client = SSHExecutor(host=host)
-        res = client.get_commands_results()
-        pprint(res)
+    client = SSHExecutor(host=host)
+    res = client.get_commands_results()
+    print("%s results: " % host, res)
+
+
+def check_all_hosts_status(file_path, pool_size=3):
+    with ThreadPoolExecutor(max_workers=pool_size) as executor:
+        executor.map(connect_and_get_results, get_active_hosts(file_path=file_path))
+
+
+def main():
+    try:
+        file_path = sys.argv[1]
+    except IndexError:
+        print("Pass file name or path as an argument")
+        sys.exit(1)
+    check_all_hosts_status(file_path=file_path)
 
 
 if __name__ == "__main__":
