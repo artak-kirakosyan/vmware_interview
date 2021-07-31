@@ -1,30 +1,15 @@
 import copy
 import ipaddress as ip
+import logging
 import os
 import re
 import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict
-import logging
+from pprint import pprint
+from typing import List, Dict, Iterable
+
 import paramiko
-
-
-def get_hosts(file_path: str):
-    if not os.path.isfile(file_path):
-        raise ValueError("%s file does not exist" % file_path)
-    with open(file_path, "r") as f:
-        for line in f:
-            yield line
-
-
-def get_active_hosts(file_path: str, comment_symbol: str = ";"):
-    for line in get_hosts(file_path):
-        if line.startswith(comment_symbol):
-            logging.warning("Commented line:\n\t'%s'" % line)
-            continue
-        else:
-            yield line
 
 
 class Command:
@@ -165,38 +150,66 @@ class SSHExecutor:
             "error": error,
         }
 
-    def get_commands_results(self) -> Dict[str, Dict[str, str]]:
+    def get_commands_results(self) -> Dict:
         try:
             self.connect()
         except paramiko.AuthenticationException as e:
+            status = "Authentication error"
+            result = {}
             logging.error("Authentication error when connecting to %s: %s" % (self.host, e))
-            results = {}
         except socket.timeout as e:
+            status = "Connection timout"
+            result = {}
             logging.error("Connection timed out on %s: %s" % (self.host, e))
-            results = {}
         else:
+            status = "Success"
             logging.debug("Connected to %s, executing commands" % (self.host,))
-            results = self.execute_commands()
+            result = self.execute_commands()
         finally:
             self.client.close()
+        results = {"status": status, "result": result}
         return results
 
 
-def connect_and_get_results(line: str):
-    try:
-        host = HostCredentials.get_host_credentials_from_line(line)
-    except ValueError:
-        logging.error("Failed to get host info from %s" % line)
-        raise RuntimeError("Failed to get host info")
+def get_hosts(file_path: str):
+    if not os.path.isfile(file_path):
+        raise ValueError("%s file does not exist" % file_path)
+    with open(file_path, "r") as f:
+        for line in f:
+            yield line
 
+
+def get_active_hosts(file_path: str, comment_symbol: str = ";"):
+    for line in get_hosts(file_path):
+        if line.startswith(comment_symbol):
+            logging.warning("Commented line:\n\t'%s'" % line)
+            continue
+        else:
+            yield line
+
+
+def get_host_credentials(file_path: str, comment_symbol: str = ";") -> Iterable[HostCredentials]:
+    for line in get_active_hosts(file_path, comment_symbol):
+        try:
+            host = HostCredentials.get_host_credentials_from_line(line)
+        except ValueError:
+            logging.error("Failed to get host info from %s" % line)
+            continue
+        else:
+            yield host
+
+
+def connect_and_get_results(host: HostCredentials) -> Dict[HostCredentials, Dict]:
     client = SSHExecutor(host=host)
     res = client.get_commands_results()
-    print("%s results: " % host, res)
+    pprint(res)
+    return {host: res}
 
 
-def check_all_hosts_status(file_path, pool_size=3):
+def check_all_hosts_status(file_path, pool_size=10) -> List[Dict]:
     with ThreadPoolExecutor(max_workers=pool_size) as executor:
-        executor.map(connect_and_get_results, get_active_hosts(file_path=file_path))
+        results = executor.map(connect_and_get_results, get_host_credentials(file_path=file_path, comment_symbol=";"))
+    return list(results)
 
 
 def main():
@@ -205,7 +218,8 @@ def main():
     except IndexError:
         print("Pass file name or path as an argument")
         sys.exit(1)
-    check_all_hosts_status(file_path=file_path)
+    results = check_all_hosts_status(file_path=file_path)
+    pprint(results)
 
 
 if __name__ == "__main__":
