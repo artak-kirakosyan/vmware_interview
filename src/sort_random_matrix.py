@@ -65,10 +65,6 @@ def main():
     print("Initial matrix")
     pprint(matrix)
 
-    sorted_matrix = sort_matrix_rows_builtin(matrix=matrix[:])
-    print("Sorted matrix")
-    pprint(sorted_matrix)
-
     count_sorted = sort_matrix_rows_by_counting(matrix=matrix)
     print("Count sorted")
     pprint(count_sorted)
