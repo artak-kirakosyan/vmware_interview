@@ -7,7 +7,7 @@ import socket
 from concurrent.futures import ThreadPoolExecutor
 from pprint import pprint
 from typing import List, Dict, Iterable, Optional
-
+from pathlib import Path
 import typer
 import paramiko
 
@@ -213,10 +213,20 @@ def check_all_hosts_status(file_path, pool_size=10) -> List[Dict]:
 
 
 def main(
-        file_path: str = typer.Argument(...),
-        number_of_parallel_workers: Optional[int] = typer.Argument(3)
+        file: Path = typer.Option(
+            ..., help="Path to the file of the host names",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        ),
+        number_of_parallel_workers: Optional[int] = typer.Argument(
+            3, help="Number of parallel workers",
+            min=1,
+            max=10,
+        )
 ):
-    results = check_all_hosts_status(file_path=file_path, pool_size=number_of_parallel_workers)
+    results = check_all_hosts_status(file_path=file, pool_size=number_of_parallel_workers)
     pprint(results)
 
 

@@ -1,6 +1,8 @@
 import random
-from typing import List
+from typing import List, Optional
 from pprint import pprint
+
+import typer
 
 MINIMUM_DIMENSION_SIZE = 10
 MAXIMUM_DIMENSION_SIZE = 20
@@ -60,8 +62,11 @@ def sort_matrix_rows_by_counting(matrix: TYPE_ANNOTATION_MATRIX) -> TYPE_ANNOTAT
     return sorted_matrix
 
 
-def main():
-    matrix = generate_random_binary_matrix()
+def main(
+        min_range: Optional[int] = typer.Argument(10, help="Minimum number of dimensions of the matrix"),
+        max_range: Optional[int] = typer.Argument(20, help="Maximum number of dimensions of the matrix"),
+):
+    matrix = generate_random_binary_matrix(max_dim_count=max_range, min_dim_count=min_range)
     print("Initial matrix")
     pprint(matrix)
 
@@ -71,4 +76,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    typer.run(main)
